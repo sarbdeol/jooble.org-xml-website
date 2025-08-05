@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="mb-5 text-center fw-bold">📊 Job Feed Dashboard</h2>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+  <!-- your three cards (Last Run, Next Run, Filtered XML) -->
+</div>
+
+<!-- Recent Runs Table -->
+<div class="card card-custom shadow-lg mt-4">
+  <div class="card-header border-0 bg-transparent">
+    <h5>📋 Recent Runs</h5>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table align-middle table-striped table-hover">
+        <thead class="table-gradient text-white">
+          <tr>
+            <th>Run Time</th>
+            <th>Total Jobs</th>
+            <th>Filtered Jobs</th>
+            <th>CPC Breakdown</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in logs %}
+          <tr>
+            <td><span class="badge bg-dark">{{ log[1] }}</span></td>
+            <td><span class="fw-bold text-info">{{ log[2] }}</span></td>
+            <td>
+              {% if log[3] == 0 %}
+                <span class="badge bg-danger">0</span>
+              {% else %}
+                <span class="badge bg-success">{{ log[3] }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if log[4] and log[4] != "{}" %}
+                {% set stats = log[4].strip("{}").split(",") %}
+                {% for pair in stats %}
+                  {% set keyval = pair.split(":") %}
+                  <span class="badge bg-primary me-1">
+                    {{ keyval[0].strip() }} → {{ keyval[1].strip() }}
+                  </span>
+                {% endfor %}
+              {% else %}
+                <span class="text-muted fst-italic">No data</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- CPC Breakdown Table -->
+<div class="card card-custom shadow-lg mt-4">
+  <div class="card-header border-0 bg-transparent">
+    <h5>📊 CPC Breakdown</h5>
+    <small class="text-muted" style="font-size: 0.9rem; color: #f9fcffff; !">
+      Jobs grouped by CPC from the latest run.
+    </small>
+  </div>
+  <div class="card-body">
+    {% if logs and logs[0][4] and logs[0][4] != "{}" %}
+      {% set stats = logs[0][4].strip("{}").split(",") %}
+      <div class="table-responsive">
+        <table class="table table-striped table-hover align-middle">
+          <thead class="table-gradient text-white">
+            <tr>
+              <th scope="col">CPC (€)</th>
+              <th scope="col">Job Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for pair in stats %}
+              {% set keyval = pair.split(":") %}
+              <tr>
+                <td><span class="badge bg-primary">{{ keyval[0].strip().replace('"','') }}</span></td>
+                <td><span class="fw-bold text-info">{{ keyval[1].strip() }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="text-muted fst-italic">No CPC data available for the latest run.</p>
+    {% endif %}
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  // Chart.js code ...
+</script>
+
+{% endblock %}
