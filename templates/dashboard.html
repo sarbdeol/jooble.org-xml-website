@@ -1,100 +1,651 @@
 {% extends "base.html" %}
 {% block content %}
-<h2 class="mb-5 text-center fw-bold">📊 Job Feed Dashboard</h2>
-
-<!-- Stats Cards -->
-<div class="row g-4 mb-4">
-  <!-- your three cards (Last Run, Next Run, Filtered XML) -->
+<div class="dashboard-header">
+  <h1 class="mb-4">Job Feed Administration</h1>
+  <div class="admin-controls">
+    <button class="btn btn-primary me-2" data-bs-toggle="modal" data-bs-target="#runNowModal">
+      <i class="fas fa-play me-1"></i> Run Now
+    </button>
+    <button class="btn btn-outline-secondary me-2" data-bs-toggle="modal" data-bs-target="#settingsModal">
+      <i class="fas fa-cog me-1"></i> Settings
+    </button>
+    <button class="btn btn-outline-info" data-bs-toggle="modal" data-bs-target="#helpModal">
+      <i class="fas fa-question-circle me-1"></i> Help
+    </button>
+  </div>
 </div>
 
-<!-- Recent Runs Table -->
-<div class="card card-custom shadow-lg mt-4">
-  <div class="card-header border-0 bg-transparent">
-    <h5>📋 Recent Runs</h5>
+<!-- Stats Cards - Enhanced -->
+<div class="row g-4 mb-4">
+  <div class="col-md-3">
+    <div class="card stat-card bg-primary bg-opacity-10 border-primary">
+      <div class="card-body">
+        <div class="stat-icon">
+          <i class="fas fa-clock text-primary"></i>
+        </div>
+        <h6 class="stat-title">LAST RUN</h6>
+        <div class="stat-value">
+          {% if config.last_run %}
+            {{ config.last_run|format_datetime }}
+          {% else %}
+            <span class="text-muted">Never</span>
+          {% endif %}
+        </div>
+        <div class="stat-description">Last successful processing</div>
+      </div>
+    </div>
   </div>
-  <div class="card-body">
-    <div class="table-responsive">
-      <table class="table align-middle table-striped table-hover">
-        <thead class="table-gradient text-white">
-          <tr>
-            <th>Run Time</th>
-            <th>Total Jobs</th>
-            <th>Filtered Jobs</th>
-            <th>CPC Breakdown</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for log in logs %}
-          <tr>
-            <td><span class="badge bg-dark">{{ log[1] }}</span></td>
-            <td><span class="fw-bold text-info">{{ log[2] }}</span></td>
-            <td>
-              {% if log[3] == 0 %}
-                <span class="badge bg-danger">0</span>
-              {% else %}
-                <span class="badge bg-success">{{ log[3] }}</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if log[4] and log[4] != "{}" %}
-                {% set stats = log[4].strip("{}").split(",") %}
-                {% for pair in stats %}
-                  {% set keyval = pair.split(":") %}
-                  <span class="badge bg-primary me-1">
-                    {{ keyval[0].strip() }} → {{ keyval[1].strip() }}
-                  </span>
-                {% endfor %}
-              {% else %}
-                <span class="text-muted fst-italic">No data</span>
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+  
+  <div class="col-md-3">
+    <div class="card stat-card bg-success bg-opacity-10 border-success">
+      <div class="card-body">
+        <div class="stat-icon">
+          <i class="fas fa-calendar-check text-success"></i>
+        </div>
+        <h6 class="stat-title">NEXT RUN</h6>
+        <div class="stat-value">
+          {% if config.next_run %}
+            {{ config.next_run|format_datetime }}
+          {% else %}
+            <span class="text-muted">Not scheduled</span>
+          {% endif %}
+        </div>
+        <div class="stat-description">Interval: {{ config.interval }} hours</div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="col-md-3">
+    <div class="card stat-card bg-info bg-opacity-10 border-info">
+      <div class="card-body">
+        <div class="stat-icon">
+          <i class="fas fa-database text-info"></i>
+        </div>
+        <h6 class="stat-title">TOTAL JOBS</h6>
+        <div class="stat-value">
+          {% if logs and logs[0] %}
+            {{ logs[0][2]|format_number }}
+          {% else %}
+            <span class="text-muted">N/A</span>
+          {% endif %}
+        </div>
+        <div class="stat-description">Last processed count</div>
+      </div>
+    </div>
+  </div>
+  <!-- Add this card to your dashboard.html where you want the filter settings to appear -->
+<div class="col-md-4">
+  <div class="card card-custom h-100">
+    <div class="card-body">
+      <h5 class="card-title">⚙️ Current Filter Settings</h5>
+      <div class="mb-2">
+        <strong>Feed URL:</strong>
+        <div class="text-truncate text-muted" style="max-width: 100%;">
+          {{ current_feed_url or 'Not set' }}
+        </div>
+      </div>
+      <div class="mb-2">
+        <strong>CPC Threshold:</strong>
+        <span class="badge bg-primary">
+          {{ "%.2f"|format(current_threshold) }}€
+        </span>
+      </div>
+      <div>
+        <strong>Run Interval:</strong>
+        <span class="badge bg-info">
+          Every {{ current_interval }} hour(s)
+        </span>
+      </div>
+      <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary mt-3">
+        <i class="fas fa-cog me-1"></i> Update Settings
+      </a>
+    </div>
+  </div>
+</div>
+  <div class="col-md-3">
+    <div class="card stat-card bg-warning bg-opacity-10 border-warning">
+      <div class="card-body">
+        <div class="stat-icon">
+          <i class="fas fa-filter text-warning"></i>
+        </div>
+        <h6 class="stat-title">FILTERED JOBS</h6>
+        <div class="stat-value">
+          {% if logs and logs[0] %}
+            {{ logs[0][3]|format_number }}
+          {% else %}
+            <span class="text-muted">N/A</span>
+          {% endif %}
+        </div>
+        <div class="stat-description">
+          {% if logs and logs[0] and logs[0][2] > 0 %}
+            {{ "%.1f"|format(logs[0][3]/logs[0][2]*100) }}% filter rate
+          {% endif %}
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- CPC Breakdown Table -->
-<div class="card card-custom shadow-lg mt-4">
-  <div class="card-header border-0 bg-transparent">
-    <h5>📊 CPC Breakdown</h5>
-    <small class="text-muted" style="font-size: 0.9rem; color: #f9fcffff; !">
-      Jobs grouped by CPC from the latest run.
-    </small>
+<!-- Main Content Tabs -->
+<div class="card shadow-sm mb-4">
+  <div class="card-header border-0 bg-white">
+    <ul class="nav nav-tabs card-header-tabs" id="dashboardTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="activity-tab" data-bs-toggle="tab" data-bs-target="#activity" type="button" role="tab">
+          <i class="fas fa-history me-2"></i>Activity Log
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="analytics-tab" data-bs-toggle="tab" data-bs-target="#analytics" type="button" role="tab">
+          <i class="fas fa-chart-bar me-2"></i>Analytics
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="exports-tab" data-bs-toggle="tab" data-bs-target="#exports" type="button" role="tab">
+          <i class="fas fa-file-export me-2"></i>Exports
+        </button>
+      </li>
+    </ul>
   </div>
-  <div class="card-body">
-    {% if logs and logs[0][4] and logs[0][4] != "{}" %}
-      {% set stats = logs[0][4].strip("{}").split(",") %}
+  <div class="card-body tab-content p-0">
+    <!-- Activity Tab -->
+    <div class="tab-pane fade show active" id="activity" role="tabpanel">
       <div class="table-responsive">
-        <table class="table table-striped table-hover align-middle">
-          <thead class="table-gradient text-white">
+        <table class="table table-hover align-middle">
+          <thead class="table-light">
             <tr>
-              <th scope="col">CPC (€)</th>
-              <th scope="col">Job Count</th>
+              <th>Timestamp</th>
+              <th>Status</th>
+              <th>Total Jobs</th>
+              <th>Filtered</th>
+              <th>Filter Rate</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {% for pair in stats %}
-              {% set keyval = pair.split(":") %}
-              <tr>
-                <td><span class="badge bg-primary">{{ keyval[0].strip().replace('"','') }}</span></td>
-                <td><span class="fw-bold text-info">{{ keyval[1].strip() }}</span></td>
-              </tr>
+            {% for log in logs %}
+            <tr>
+              <td>
+                <div class="fw-bold">{{ log[1]|format_datetime }}</div>
+                <small class="text-muted">{{ log[1]|time_ago }}</small>
+              </td>
+              <td>
+                {% if log[3] > 0 %}
+                  <span class="badge bg-success bg-opacity-10 text-success">
+                    <i class="fas fa-check-circle me-1"></i>Success
+                  </span>
+                {% else %}
+                  <span class="badge bg-danger bg-opacity-10 text-danger">
+                    <i class="fas fa-exclamation-circle me-1"></i>No Results
+                  </span>
+                {% endif %}
+              </td>
+              <td>{{ log[2]|format_number }}</td>
+              <td>
+                <span class="fw-bold">{{ log[3]|format_number }}</span>
+              </td>
+              <td>
+                <div class="progress" style="height: 6px;">
+                  <div class="progress-bar bg-info" role="progressbar" 
+                       style="width: {{ (log[3]/log[2]*100 if log[2] > 0 else 0)|round(1) }}%" 
+                       aria-valuenow="{{ (log[3]/log[2]*100 if log[2] > 0 else 0)|round(1) }}">
+                  </div>
+                </div>
+                <small>{{ (log[3]/log[2]*100 if log[2] > 0 else 0)|round(1) }}%</small>
+              </td>
+              <td>
+                <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" 
+                        data-bs-target="#logDetailsModal{{ loop.index }}">
+                  <i class="fas fa-eye"></i> Details
+                </button>
+                {% if loop.first and config.last_run %}
+                  <a href="{{ url_for('download') }}" class="btn btn-sm btn-outline-primary ms-1">
+                    <i class="fas fa-download"></i> Download
+                  </a>
+                {% endif %}
+              </td>
+            </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
-    {% else %}
-      <p class="text-muted fst-italic">No CPC data available for the latest run.</p>
-    {% endif %}
+    </div>
+    
+    <!-- Analytics Tab -->
+    <div class="tab-pane fade" id="analytics" role="tabpanel">
+      <div class="row">
+        <div class="col-md-8">
+          <div class="card mb-4">
+            <div class="card-header bg-white">
+              <h5 class="mb-0">CPC Distribution</h5>
+            </div>
+            <div class="card-body">
+              {% if logs and logs[0][4] and logs[0][4] != "{}" %}
+                <canvas id="cpcChart" height="300"></canvas>
+              {% else %}
+                <div class="alert alert-info">No CPC data available for visualization.</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card mb-4">
+            <div class="card-header bg-white">
+              <h5 class="mb-0">Filter Statistics</h5>
+            </div>
+            <div class="card-body">
+              <canvas id="filterStatsChart" height="300"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Exports Tab -->
+    <div class="tab-pane fade" id="exports" role="tabpanel">
+      <div class="alert alert-info">
+        <i class="fas fa-info-circle me-2"></i> Export filtered job data in various formats.
+      </div>
+      <div class="row">
+        <div class="col-md-4">
+          <div class="card export-option">
+            <div class="card-body text-center">
+              <div class="export-icon mb-3">
+                <i class="fas fa-file-code text-primary fa-3x"></i>
+              </div>
+              <h5>XML Export</h5>
+              <p class="text-muted">Original XML format</p>
+              {% if config.last_run %}
+                <a href="{{ url_for('download', format='xml') }}" class="btn btn-primary">
+                  <i class="fas fa-download me-1"></i> Download
+                </a>
+              {% else %}
+                <button class="btn btn-primary" disabled>No data available</button>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card export-option">
+            <div class="card-body text-center">
+              <div class="export-icon mb-3">
+                <i class="fas fa-file-csv text-success fa-3x"></i>
+              </div>
+              <h5>CSV Export</h5>
+              <p class="text-muted">Spreadsheet format</p>
+              {% if config.last_run %}
+                <a href="{{ url_for('download', format='csv') }}" class="btn btn-success">
+                  <i class="fas fa-download me-1"></i> Download
+                </a>
+              {% else %}
+                <button class="btn btn-success" disabled>No data available</button>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="card export-option">
+            <div class="card-body text-center">
+              <div class="export-icon mb-3">
+                <i class="fas fa-file-excel text-warning fa-3x"></i>
+              </div>
+              <h5>Excel Export</h5>
+              <p class="text-muted">Excel format</p>
+              {% if config.last_run %}
+                <a href="{{ url_for('download', format='xlsx') }}" class="btn btn-warning">
+                  <i class="fas fa-download me-1"></i> Download
+                </a>
+              {% else %}
+                <button class="btn btn-warning" disabled>No data available</button>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
+<!-- Log Details Modals -->
+{% for log in logs %}
+<div class="modal fade" id="logDetailsModal{{ loop.index }}" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Run Details - {{ log[1] }}</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row mb-4">
+          <div class="col-md-6">
+            <div class="detail-card">
+              <h6><i class="fas fa-info-circle me-2"></i>Basic Info</h6>
+              <ul class="list-unstyled">
+                <li><strong>Run Time:</strong> {{ log[1] }}</li>
+                <li><strong>Total Jobs:</strong> {{ log[2] }}</li>
+                <li><strong>Filtered Jobs:</strong> {{ log[3] }}</li>
+                <li><strong>Filter Rate:</strong> {{ (log[3]/log[2]*100 if log[2] > 0 else 0)|round(1) }}%</li>
+              </ul>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="detail-card">
+              <h6><i class="fas fa-chart-pie me-2"></i>CPC Breakdown</h6>
+              {% if log[4] and log[4] != "{}" %}
+                {% set stats = log[4].strip("{}").split(",") %}
+                {% for pair in stats|sort(attribute='0', reverse=True) %}
+                  {% set keyval = pair.split(":") %}
+                  <div class="d-flex justify-content-between mb-1">
+                    <span>{{ keyval[0].strip().replace('"', '') }}€</span>
+                    <span class="badge bg-primary">{{ keyval[1].strip() }}</span>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <p class="text-muted">No CPC data available</p>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="alert alert-info">
+          <i class="fas fa-info-circle me-2"></i> Additional processing details would be shown here.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        {% if loop.first %}
+          <a href="{{ url_for('download') }}" class="btn btn-primary">
+            <i class="fas fa-download me-1"></i> Download Results
+          </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+<!-- Run Now Modal -->
+<div class="modal fade" id="runNowModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-play me-2"></i>Run Job Processing Now</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>This will immediately trigger the job feed processing. Are you sure?</p>
+        <div class="alert alert-warning">
+          <i class="fas fa-exclamation-triangle me-2"></i> Depending on the feed size, this may take several minutes.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirmRunNow">
+          <i class="fas fa-play me-1"></i> Run Now
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-cog me-2"></i>System Settings</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <form id="settingsForm">
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="interval" class="form-label">Processing Interval (hours)</label>
+              <input type="number" class="form-control" id="interval" 
+                     value="{{ config.interval }}" min="1" max="24">
+            </div>
+            <div class="col-md-6">
+              <label for="minCPC" class="form-label">Minimum CPC (€)</label>
+              <input type="number" step="0.01" class="form-control" id="minCPC" 
+                     value="{{ config.min_cpc }}">
+            </div>
+          </div>
+          <div class="mb-3">
+            <label for="feedUrl" class="form-label">Job Feed URL</label>
+            <input type="url" class="form-control" id="feedUrl" 
+                   value="{{ config.feed_url }}">
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" id="enableNotifications"
+                   {% if config.notifications %}checked{% endif %}>
+            <label class="form-check-label" for="enableNotifications">Enable Email Notifications</label>
+          </div>
+          <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i> Changes will take effect after the next run.
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="saveSettings">
+          <i class="fas fa-save me-1"></i> Save Settings
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Help Modal -->
+<div class="modal fade" id="helpModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fas fa-question-circle me-2"></i>Dashboard Help</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <h6>Dashboard Overview</h6>
+        <p>This admin dashboard allows you to monitor and control the job feed processing system.</p>
+        
+        <h6 class="mt-3">Key Features</h6>
+        <ul>
+          <li><strong>Activity Log:</strong> View historical processing runs and results</li>
+          <li><strong>Analytics:</strong> Visualize CPC distribution and filter statistics</li>
+          <li><strong>Exports:</strong> Download filtered results in multiple formats</li>
+          <li><strong>Manual Control:</strong> Trigger processing runs and adjust settings</li>
+        </ul>
+        
+        <h6 class="mt-3">Support</h6>
+        <p>For additional assistance, please contact your system administrator.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Got it!</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- JavaScript -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-  // Chart.js code ...
+  // Initialize CPC Chart
+  document.addEventListener('DOMContentLoaded', function() {
+    {% if logs and logs[0][4] and logs[0][4] != "{}" %}
+      const ctx = document.getElementById('cpcChart').getContext('2d');
+      const stats = {{ logs[0][4]|safe }};
+      
+      // Prepare data for chart
+      const labels = Object.keys(stats).map(k => parseFloat(k).toFixed(2) + '€').reverse();
+      const data = Object.values(stats).reverse();
+      
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Number of Jobs',
+            data: data,
+            backgroundColor: 'rgba(54, 162, 235, 0.7)',
+            borderColor: 'rgba(54, 162, 235, 1)',
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  return `${context.parsed.y} jobs at ${context.label}`;
+                }
+              }
+            }
+          },
+          scales: {
+            y: { beginAtZero: true, title: { display: true, text: 'Number of Jobs' } },
+            x: { title: { display: true, text: 'CPC Value (€)' } }
+          }
+        }
+      });
+    {% endif %}
+    
+    // Initialize Filter Stats Chart
+    const filterCtx = document.getElementById('filterStatsChart').getContext('2d');
+    new Chart(filterCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Filtered Jobs', 'Excluded Jobs'],
+        datasets: [{
+          data: [
+            {% if logs and logs[0] %}{{ logs[0][3] }}, {{ logs[0][2] - logs[0][3] }}{% else %}0, 0{% endif %}
+          ],
+          backgroundColor: ['#4bc0c0', '#ff6384'],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+    
+    // Handle Run Now button
+    document.getElementById('confirmRunNow').addEventListener('click', function() {
+      fetch('/api/run-now', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          if(data.success) {
+            location.reload();
+          } else {
+            alert('Error: ' + data.message);
+          }
+        });
+    });
+    
+    // Handle Save Settings button
+    document.getElementById('saveSettings').addEventListener('click', function() {
+      const settings = {
+        interval: document.getElementById('interval').value,
+        min_cpc: document.getElementById('minCPC').value,
+        feed_url: document.getElementById('feedUrl').value,
+        notifications: document.getElementById('enableNotifications').checked
+      };
+      
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+      })
+      .then(response => response.json())
+      .then(data => {
+        if(data.success) {
+          location.reload();
+        } else {
+          alert('Error saving settings: ' + data.message);
+        }
+      });
+    });
+  });
 </script>
 
+<style>
+  .dashboard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #eee;
+  }
+  
+  .stat-card {
+    border-radius: 10px;
+    transition: transform 0.2s;
+    height: 100%;
+  }
+  
+  .stat-card:hover {
+    transform: translateY(-5px);
+  }
+  
+  .stat-icon {
+    font-size: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+  
+  .stat-title {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #6c757d;
+    margin-bottom: 0.5rem;
+  }
+  
+  .stat-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+  
+  .stat-description {
+    font-size: 0.8rem;
+    color: #6c757d;
+  }
+  
+  .export-option {
+    transition: all 0.3s;
+    height: 100%;
+  }
+  
+  .export-option:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+  }
+  
+  .export-icon {
+    opacity: 0.8;
+  }
+  
+  .detail-card {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 1rem;
+    height: 100%;
+  }
+  
+  .nav-tabs .nav-link {
+    border: none;
+    padding: 0.75rem 1.25rem;
+    color: #6c757d;
+  }
+  
+  .nav-tabs .nav-link.active {
+    color: #0d6efd;
+    background: transparent;
+    border-bottom: 3px solid #0d6efd;
+  }
+</style>
 {% endblock %}

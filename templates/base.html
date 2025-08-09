@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title or "Job Feed App" }}</title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
@@ -28,7 +29,7 @@
         border: none;
         border-radius: 15px;
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
-        color: #ffffff;
+        color: #ffffff !important;
       }
       .btn-gradient {
         background: linear-gradient(90deg, #3a0ca3, #f72585);
@@ -42,25 +43,6 @@
       .table-dark-custom {
         background-color: #1b263b;
       }
-      .table-dark-custom th,
-      .table-dark-custom td {
-        color: #f8f9fa;
-      }
-
-      .table-gradient {
-        background: linear-gradient(90deg, #3a0ca3, #f72585);
-      }
-      .table-gradient th {
-        border: none;
-        color: #fff !important;
-      }
-      .table tbody tr {
-        background-color: #0d1b2a;
-        color: #000000ff;
-      }
-      .table tbody tr:hover {
-        background-color: #1b263b;
-      }
       .table-gradient {
         background: linear-gradient(90deg, #3a0ca3, #f72585);
         color: white !important;
@@ -69,27 +51,54 @@
         border: none;
         color: #000000ff !important;
       }
+      .table tbody tr {
+        background-color: #0d1b2a;
+        color: #000000ff;
+      }
+      .table tbody tr:hover {
+        background-color: #1b263b;
+      }
+      .table-striped tbody tr:nth-of-type(odd) {
+        background-color: rgba(255, 255, 255, 0.05);
+      }
+      .table-hover tbody tr:hover {
+        color: #ffffff;
+        background-color: rgba(58, 12, 163, 0.3);
+      }
+      .badge {
+        color: #ffffff;
+        font-weight: 500;
+      }
+      .bg-dark { background-color: #495057 !important; }
+      .bg-success { background-color: #20c997 !important; }
+      .bg-danger { background-color: #dc3545 !important; }
+      .bg-primary { background-color: #0d6efd !important; }
     </style>
   </head>
   <body>
     <nav class="navbar navbar-expand-lg navbar-custom shadow-sm">
       <div class="container">
-        <a class="navbar-brand" href="/">Job Feed App</a>
-        <div>
+        <a class="navbar-brand" href="{{ url_for('home') }}">Job Feed App</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
           <ul class="navbar-nav ms-auto">
             <li class="nav-item">
-              <a class="nav-link" href="{{ url_for('dashboard') }}"
-                >📊 Dashboard</a
-              >
+              <a class="nav-link" href="{{ url_for('home') }}">🏠 Home</a>
             </li>
             <li class="nav-item">
-              <a class="nav-link" href="{{ url_for('dashboard') }}">⚙️ Setup</a>
+              <a class="nav-link" href="{{ url_for('dashboard') }}">📊 Admin</a>
             </li>
           </ul>
         </div>
       </div>
     </nav>
 
-    <div class="container py-5">{% block content %}{% endblock %}</div>
+    <div class="container py-5">
+      {% block content %}{% endblock %}
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   </body>
 </html>

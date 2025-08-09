@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-center mt-5">
+  <div class="card card-custom shadow-lg p-4" style="max-width:420px;width:100%;">
+    <h4 class="mb-3 text-center">🔐 Login</h4>
+
+    <form method="POST" action="{{ url_for('login') }}">
+      <div class="mb-3">
+        <label class="form-label">Email</label>
+        <input name="email" type="email" class="form-control" placeholder="admin@example.com" required>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">Password</label>
+        <input name="password" type="password" class="form-control" placeholder="••••••••" required>
+      </div>
+
+      <button class="btn btn-gradient w-100">Login</button>
+      <div class="text-center mt-2">
+        <small class="text-muted">Tip: change the seeded admin password after first login.</small>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}
