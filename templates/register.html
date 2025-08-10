@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6 col-lg-5">
+    <div class="card p-4">
+      <h3 class="mb-3 text-center">Create Account</h3>
+      {% if not allow_signup %}
+        <div class="alert alert-warning mb-3">
+          Signups are disabled.
+        </div>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('register') }}">
+        <div class="mb-3">
+          <label class="form-label">Email</label>
+          <input name="email" type="email" class="form-control" placeholder="you@example.com" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Password</label>
+          <input name="password" type="password" class="form-control" placeholder="At least 8 characters" minlength="8" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Confirm Password</label>
+          <input name="confirm" type="password" class="form-control" minlength="8" required>
+        </div>
+        <button class="btn btn-primary w-100" type="submit" {% if not allow_signup %}disabled{% endif %}>Sign up</button>
+      </form>
+
+      <div class="text-center mt-3">
+        <a href="{{ url_for('login') }}">Already have an account? Sign in</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
