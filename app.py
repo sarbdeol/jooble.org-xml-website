@@ -24,11 +24,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 # =============================================================================
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
-ALLOW_SIGNUP = os.getenv("ALLOW_SIGNUP", "1") == "1"  # set to "0" to disable
 
 DB_FILE = "logs.db"
 FILTERED_FILE = "static/filtered_feed.xml"
 MAX_INTERVAL_HOURS = 8760  # 1 year
+ALLOW_SIGNUP = os.getenv("ALLOW_SIGNUP", "1") == "1"  # set ALLOW_SIGNUP=0 to disable
 
 CONFIG: Dict[str, Any] = {
     "feed_url": None,
@@ -41,23 +41,28 @@ CONFIG: Dict[str, Any] = {
 }
 
 # =============================================================================
-# Scheduler
+# Helpers (parsing + settings persistence)
 # =============================================================================
-scheduler = BackgroundScheduler(
-    daemon=True,
-    job_defaults={"coalesce": True, "misfire_grace_time": 300}
-)
-scheduler.start()
+def to_float(val, default=0.0):
+    try:
+        if val is None:
+            return default
+        if isinstance(val, (int, float)):
+            return float(val)
+        s = str(val).strip()
+        return float(s) if s else default
+    except Exception:
+        return default
 
-# =============================================================================
-# Login manager
-# =============================================================================
-login_manager = LoginManager(app)
-login_manager.login_view = "login"
+def to_int(val, default=1):
+    try:
+        if val is None:
+            return default
+        s = str(val).strip()
+        return int(s) if s else default
+    except Exception:
+        return default
 
-# =============================================================================
-# DB helpers
-# =============================================================================
 def init_db():
     os.makedirs("static", exist_ok=True)
     with sqlite3.connect(DB_FILE) as conn:
@@ -83,6 +88,16 @@ def init_db():
             )
             """
         )
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                id INTEGER PRIMARY KEY CHECK (id=1),
+                feed_url TEXT,
+                cpc_threshold REAL,
+                interval INTEGER
+            )
+            """
+        )
         conn.commit()
 
 def seed_admin():
@@ -103,11 +118,82 @@ def seed_admin():
         except sqlite3.IntegrityError:
             print("ℹ️ Admin already exists")
 
-init_db()
+def load_settings_into_config():
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("SELECT feed_url, cpc_threshold, interval FROM settings WHERE id=1")
+        row = c.fetchone()
+    if row:
+        CONFIG["feed_url"] = row[0]
+        CONFIG["cpc_threshold"] = to_float(row[1], 0.0)
+        CONFIG["interval"] = to_int(row[2], 1)
+
+def save_settings_from_config():
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO settings (id, feed_url, cpc_threshold, interval)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              feed_url=excluded.feed_url,
+              cpc_threshold=excluded.cpc_threshold,
+              interval=excluded.interval
+            """,
+            (
+                CONFIG.get("feed_url"),
+                float(CONFIG.get("cpc_threshold") or 0.0),
+                int(CONFIG.get("interval") or 1),
+            ),
+        )
+        conn.commit()
 
 # =============================================================================
-# Auth model/loader
+# Scheduler
 # =============================================================================
+scheduler = BackgroundScheduler(
+    daemon=True,
+    job_defaults={"coalesce": True, "misfire_grace_time": 300}
+)
+scheduler.start()
+
+def _update_next_run_label():
+    """Set CONFIG['next_run'] from scheduler's next fire time."""
+    job = scheduler.get_job("feed_job")
+    if job and job.next_run_time:
+        ts = job.next_run_time  # usually timezone-aware UTC
+        CONFIG["next_run"] = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
+    else:
+        CONFIG["next_run"] = None
+
+def update_scheduler(interval_hours: int) -> bool:
+    """Replace/define the interval job."""
+    try:
+        try:
+            scheduler.remove_job("feed_job")
+        except JobLookupError:
+            pass
+
+        scheduler.add_job(
+            fetch_and_filter,  # defined below
+            "interval",
+            hours=interval_hours,
+            id="feed_job",
+            replace_existing=True,
+        )
+
+        _update_next_run_label()
+        return True
+    except Exception as e:
+        print(f"❌ Error updating scheduler: {e}")
+        return False
+
+# =============================================================================
+# Login manager
+# =============================================================================
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+
 class User(UserMixin):
     def __init__(self, id: str, email: str, password_hash: str):
         self.id = str(id)
@@ -139,15 +225,13 @@ def fetch_and_filter() -> bool:
         root = ET.fromstring(resp.content)
         all_jobs = root.findall(".//job")
 
-        threshold = float(CONFIG.get("cpc_threshold") or 0.0)
+        threshold = to_float(CONFIG.get("cpc_threshold"), 0.0)
         filtered = []
         cpc_counts: Dict[str, int] = {}
 
         for job in all_jobs:
-            try:
-                cpc = float(job.findtext("cpc", default="0") or 0)
-            except ValueError:
-                cpc = 0.0
+            cpc_raw = job.findtext("cpc", default="0")
+            cpc = to_float(cpc_raw, 0.0)
 
             if cpc >= threshold:
                 filtered.append(job)
@@ -182,44 +266,15 @@ def fetch_and_filter() -> bool:
         print(f"❌ Error fetching or filtering feed: {e}")
         return False
 
-def _update_next_run_label():
-    """Set CONFIG['next_run'] from scheduler's next fire time."""
-    job = scheduler.get_job("feed_job")
-    if job and job.next_run_time:
-        # next_run_time is timezone-aware in UTC typically
-        ts = job.next_run_time
-        CONFIG["next_run"] = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
-    else:
-        CONFIG["next_run"] = None
-
-def update_scheduler(interval_hours: int) -> bool:
-    """Replace/define the interval job."""
-    try:
-        try:
-            scheduler.remove_job("feed_job")
-        except JobLookupError:
-            pass
-
-        scheduler.add_job(
-            fetch_and_filter,
-            "interval",
-            hours=interval_hours,
-            id="feed_job",
-            replace_existing=True,
-        )
-
-        _update_next_run_label()
-        return True
-    except Exception as e:
-        print(f"❌ Error updating scheduler: {e}")
-        return False
-
 # =============================================================================
 # Routes
 # =============================================================================
 @app.route("/", methods=["GET", "POST"])
 @login_required
 def index():
+    # Always reflect latest saved settings in UI
+    load_settings_into_config()
+
     if request.method == "POST":
         try:
             feed_url = (request.form.get("feed_url") or "").strip()
@@ -227,26 +282,23 @@ def index():
                 flash("Feed URL is required", "danger")
                 return redirect(url_for("index"))
 
-            try:
-                cpc_threshold = float(request.form.get("cpc_threshold", 0))
-                if cpc_threshold < 0:
-                    raise ValueError("CPC threshold cannot be negative")
-            except ValueError as e:
-                flash(f"Invalid CPC threshold: {e}", "danger")
-                return redirect(url_for("index"))
+            cpc_threshold = to_float(request.form.get("cpc_threshold", ""), 0.0)
+            if cpc_threshold < 0:
+                raise ValueError("CPC threshold cannot be negative")
 
-            try:
-                interval = int(request.form.get("interval", 1))
-                if interval < 1 or interval > MAX_INTERVAL_HOURS:
-                    raise ValueError(f"Interval must be between 1 and {MAX_INTERVAL_HOURS} hours")
-            except ValueError as e:
-                flash(f"Invalid interval: {e}", "danger")
-                return redirect(url_for("index"))
+            interval = to_int(request.form.get("interval", ""), 1)
+            if interval < 1 or interval > MAX_INTERVAL_HOURS:
+                raise ValueError(f"Interval must be between 1 and {MAX_INTERVAL_HOURS} hours")
 
+            # Save to CONFIG
             CONFIG["feed_url"] = feed_url
-            CONFIG["cpc_threshold"] = cpc_threshold
-            CONFIG["interval"] = interval
+            CONFIG["cpc_threshold"] = float(cpc_threshold)
+            CONFIG["interval"] = int(interval)
 
+            # Persist to DB first (source of truth)
+            save_settings_from_config()
+
+            # Update scheduler
             if not update_scheduler(interval):
                 flash("Failed to update scheduler", "danger")
                 return redirect(url_for("index"))
@@ -265,64 +317,21 @@ def index():
             return redirect(url_for("index"))
 
     return render_template("setup.html", config=CONFIG, title="Setup Job Feed")
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    # if disabled, just render page with disabled button + flash
-    if request.method == "GET":
-        return render_template("register.html", title="Register", allow_signup=ALLOW_SIGNUP)
-
-    if not ALLOW_SIGNUP:
-        flash("Signups are currently disabled.", "warning")
-        return redirect(url_for("login"))
-
-    email = (request.form.get("email") or "").strip().lower()
-    password = (request.form.get("password") or "")
-    confirm  = (request.form.get("confirm") or "")
-
-    # basic validation
-    if not email or "@" not in email:
-        flash("Please enter a valid email.", "danger")
-        return redirect(url_for("register"))
-    if len(password) < 8:
-        flash("Password must be at least 8 characters.", "danger")
-        return redirect(url_for("register"))
-    if password != confirm:
-        flash("Passwords do not match.", "danger")
-        return redirect(url_for("register"))
-
-    with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        # check existing
-        c.execute("SELECT id FROM users WHERE email=?", (email,))
-        if c.fetchone():
-            flash("Email already registered. Try logging in.", "warning")
-            return redirect(url_for("login"))
-
-        # create user
-        c.execute(
-            "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
-            (email, generate_password_hash(password), datetime.datetime.now().isoformat()),
-        )
-        conn.commit()
-        user_id = c.lastrowid
-
-    # auto-login newly registered user
-    user = User(user_id, email, "")  # password hash not needed here
-    login_user(user, remember=True)
-    flash("🎉 Account created and logged in.", "success")
-    return redirect(url_for("dashboard"))
 
 @app.route("/dashboard")
 @login_required
 def dashboard():
+    # Ensure latest settings are loaded for display
+    load_settings_into_config()
+
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        # get last row
+        # Last run
         c.execute(
             "SELECT run_time, jobs_total, jobs_filtered, cpc_stats FROM logs ORDER BY id DESC LIMIT 1"
         )
         last = c.fetchone()
-        # get last 10 rows
+        # Last 10 runs
         c.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 10")
         logs = c.fetchall()
 
@@ -331,9 +340,8 @@ def dashboard():
     total_filtered = None
 
     if last:
-        # last = (run_time, jobs_total, jobs_filtered, cpc_stats)
-        last_run = last[0]
-        total_filtered = last[2]  # match template 'total' as filtered count
+        last_run = last[0]           # run_time
+        total_filtered = last[2]     # jobs_filtered
         try:
             stats = json.loads(last[3]) if last[3] else {}
         except json.JSONDecodeError:
@@ -386,6 +394,48 @@ def login():
 
     return render_template("login.html", title="Login")
 
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "GET":
+        return render_template("register.html", title="Register", allow_signup=ALLOW_SIGNUP)
+
+    if not ALLOW_SIGNUP:
+        flash("Signups are currently disabled.", "warning")
+        return redirect(url_for("login"))
+
+    email = (request.form.get("email") or "").strip().lower()
+    password = (request.form.get("password") or "")
+    confirm  = (request.form.get("confirm") or "")
+
+    if not email or "@" not in email:
+        flash("Please enter a valid email.", "danger")
+        return redirect(url_for("register"))
+    if len(password) < 8:
+        flash("Password must be at least 8 characters.", "danger")
+        return redirect(url_for("register"))
+    if password != confirm:
+        flash("Passwords do not match.", "danger")
+        return redirect(url_for("register"))
+
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM users WHERE email=?", (email,))
+        if c.fetchone():
+            flash("Email already registered. Try logging in.", "warning")
+            return redirect(url_for("login"))
+
+        c.execute(
+            "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
+            (email, generate_password_hash(password), datetime.datetime.now().isoformat()),
+        )
+        conn.commit()
+        user_id = c.lastrowid
+
+    user = User(user_id, email, "")  # password hash not needed for session
+    login_user(user, remember=True)
+    flash("🎉 Account created and logged in.", "success")
+    return redirect(url_for("dashboard"))
+
 @app.route("/logout")
 @login_required
 def logout():
@@ -393,7 +443,7 @@ def logout():
     flash("👋 Logged out.", "info")
     return redirect(url_for("login"))
 
-# --- Optional: one-time seeding route. Remove after first use.
+# --- One-time seeding route. Remove after first use.
 @app.route("/create-admin")
 def create_admin_route():
     seed_admin()
@@ -405,8 +455,13 @@ def healthz():
     return {"status": "ok", "next_run": CONFIG.get("next_run")}, 200
 
 # =============================================================================
-# Main
+# Bootstrap
 # =============================================================================
+init_db()
+load_settings_into_config()
+# Recreate the scheduler job on boot if a feed is configured
+if CONFIG.get("feed_url"):
+    update_scheduler(CONFIG.get("interval") or 1)
+
 if __name__ == "__main__":
-    # For local dev; adjust host/port as needed
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
