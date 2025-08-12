@@ -3,11 +3,12 @@ import datetime
 import json
 import sqlite3
 import xml.etree.ElementTree as ET
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 
 import requests
 from flask import (
-    Flask, request, render_template, redirect, url_for, send_file, flash
+    Flask, request, render_template, redirect, url_for, send_file, flash,
+    send_from_directory, abort
 )
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.base import JobLookupError
@@ -26,18 +27,19 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
 
 DB_FILE = "logs.db"
-FILTERED_FILE = "static/filtered_feed.xml"
+STATIC_DIR = "static"
+FEEDS_DIR = os.path.join(STATIC_DIR, "feeds")
 MAX_INTERVAL_HOURS = 8760  # 1 year
 ALLOW_SIGNUP = os.getenv("ALLOW_SIGNUP", "1") == "1"  # set ALLOW_SIGNUP=0 to disable
 
 CONFIG: Dict[str, Any] = {
-    "feed_url": None,
-    "cpc_threshold": 0.0,
+    "feed_url": None,          # single incoming feed
     "interval": 1,
+    "base_slug": "stellenonline",  # used in nested URLs: /<base_slug>/<profile_slug>
     "last_run": None,
-    "next_run": None,       # human-readable
-    "last_total": 0,        # filtered count from last run
-    "stats": {}             # CPC distribution from last run
+    "next_run": None,
+    "last_total": 0,
+    "stats": {}
 }
 
 # =============================================================================
@@ -45,10 +47,8 @@ CONFIG: Dict[str, Any] = {
 # =============================================================================
 def to_float(val, default=0.0):
     try:
-        if val is None:
-            return default
-        if isinstance(val, (int, float)):
-            return float(val)
+        if val is None: return default
+        if isinstance(val, (int, float)): return float(val)
         s = str(val).strip()
         return float(s) if s else default
     except Exception:
@@ -56,62 +56,85 @@ def to_float(val, default=0.0):
 
 def to_int(val, default=1):
     try:
-        if val is None:
-            return default
+        if val is None: return default
         s = str(val).strip()
         return int(s) if s else default
     except Exception:
         return default
 
+def normalize_slug(s: str, default: str = "stellenonline") -> str:
+    if not s:
+        return default
+    s = s.strip().lower()
+    # keep alnum, dash, underscore only
+    return "".join(ch for ch in s if ch.isalnum() or ch in "-_") or default
+
 def init_db():
-    os.makedirs("static", exist_ok=True)
+    os.makedirs(STATIC_DIR, exist_ok=True)
+    os.makedirs(FEEDS_DIR, exist_ok=True)
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        c.execute(
-            """
+
+        # logs (add file_path, profile_slug)
+        c.execute("""
             CREATE TABLE IF NOT EXISTS logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_time TEXT,
                 jobs_total INTEGER,
                 jobs_filtered INTEGER,
-                cpc_stats TEXT
+                cpc_stats TEXT,
+                file_path TEXT,
+                profile_slug TEXT
             )
-            """
-        )
-        c.execute(
-            """
+        """)
+        for col, sqltype in [("file_path", "TEXT"), ("profile_slug", "TEXT")]:
+            try: c.execute(f"ALTER TABLE logs ADD COLUMN {col} {sqltype}")
+            except sqlite3.OperationalError: pass
+
+        # users
+        c.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 created_at TEXT
             )
-            """
-        )
-        c.execute(
-            """
+        """)
+
+        # settings (feed_url, interval, base_slug)
+        c.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 id INTEGER PRIMARY KEY CHECK (id=1),
                 feed_url TEXT,
-                cpc_threshold REAL,
-                interval INTEGER
+                interval INTEGER,
+                base_slug TEXT
             )
-            """
-        )
+        """)
+        for col, sqltype in [("base_slug", "TEXT")]:
+            try: c.execute(f"ALTER TABLE settings ADD COLUMN {col} {sqltype}")
+            except sqlite3.OperationalError: pass
+
+        # profiles: many outgoing XML definitions (slug + min/max)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT UNIQUE NOT NULL,
+                cpc_min REAL NOT NULL,
+                cpc_max REAL,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT
+            )
+        """)
+
         conn.commit()
 
 def seed_admin():
-    """Create an initial admin user if not present."""
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         try:
             c.execute(
                 "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
-                (
-                    "admin@example.com",
-                    generate_password_hash("ChangeMe123!"),
-                    datetime.datetime.now().isoformat(),
-                ),
+                ("admin@example.com", generate_password_hash("ChangeMe123!"), datetime.datetime.now().isoformat())
             )
             conn.commit()
             print("✅ Seeded admin: admin@example.com / ChangeMe123!")
@@ -121,32 +144,42 @@ def seed_admin():
 def load_settings_into_config():
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        c.execute("SELECT feed_url, cpc_threshold, interval FROM settings WHERE id=1")
+        c.execute("SELECT feed_url, interval, base_slug FROM settings WHERE id=1")
         row = c.fetchone()
     if row:
-        CONFIG["feed_url"] = row[0]
-        CONFIG["cpc_threshold"] = to_float(row[1], 0.0)
-        CONFIG["interval"] = to_int(row[2], 1)
+        CONFIG["feed_url"] = (row[0] or None)
+        CONFIG["interval"] = to_int(row[1], 1)
+        CONFIG["base_slug"] = normalize_slug(row[2] or CONFIG["base_slug"])
 
 def save_settings_from_config():
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        c.execute(
-            """
-            INSERT INTO settings (id, feed_url, cpc_threshold, interval)
+        c.execute("""
+            INSERT INTO settings (id, feed_url, interval, base_slug)
             VALUES (1, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               feed_url=excluded.feed_url,
-              cpc_threshold=excluded.cpc_threshold,
-              interval=excluded.interval
-            """,
-            (
-                CONFIG.get("feed_url"),
-                float(CONFIG.get("cpc_threshold") or 0.0),
-                int(CONFIG.get("interval") or 1),
-            ),
-        )
+              interval=excluded.interval,
+              base_slug=excluded.base_slug
+        """, (CONFIG.get("feed_url"), int(CONFIG.get("interval") or 1), CONFIG.get("base_slug")))
         conn.commit()
+
+def get_profiles(enabled_only=True) -> List[Tuple[str, float, Optional[float]]]:
+    """Return list of (slug, cpc_min, cpc_max or None)."""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        if enabled_only:
+            c.execute("SELECT slug, cpc_min, cpc_max FROM profiles WHERE is_enabled=1 ORDER BY id")
+        else:
+            c.execute("SELECT slug, cpc_min, cpc_max FROM profiles ORDER BY id")
+        rows = c.fetchall()
+    out = []
+    for slug, mn, mx in rows:
+        out.append((slug, to_float(mn, 0.0), (to_float(mx, None) if mx is not None else None)))
+    return out
+
+def ensure_profile_dir(slug: str):
+    os.makedirs(os.path.join(FEEDS_DIR, slug), exist_ok=True)
 
 # =============================================================================
 # Scheduler
@@ -158,30 +191,20 @@ scheduler = BackgroundScheduler(
 scheduler.start()
 
 def _update_next_run_label():
-    """Set CONFIG['next_run'] from scheduler's next fire time."""
     job = scheduler.get_job("feed_job")
     if job and job.next_run_time:
-        ts = job.next_run_time  # usually timezone-aware UTC
+        ts = job.next_run_time
         CONFIG["next_run"] = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
     else:
         CONFIG["next_run"] = None
 
 def update_scheduler(interval_hours: int) -> bool:
-    """Replace/define the interval job."""
     try:
         try:
             scheduler.remove_job("feed_job")
         except JobLookupError:
             pass
-
-        scheduler.add_job(
-            fetch_and_filter,  # defined below
-            "interval",
-            hours=interval_hours,
-            id="feed_job",
-            replace_existing=True,
-        )
-
+        scheduler.add_job(fetch_and_filter, "interval", hours=interval_hours, id="feed_job", replace_existing=True)
         _update_next_run_label()
         return True
     except Exception as e:
@@ -196,9 +219,7 @@ login_manager.login_view = "login"
 
 class User(UserMixin):
     def __init__(self, id: str, email: str, password_hash: str):
-        self.id = str(id)
-        self.email = email
-        self.password_hash = password_hash
+        self.id = str(id); self.email = email; self.password_hash = password_hash
 
 @login_manager.user_loader
 def load_user(user_id: str) -> Optional[User]:
@@ -206,60 +227,81 @@ def load_user(user_id: str) -> Optional[User]:
         c = conn.cursor()
         c.execute("SELECT id, email, password_hash FROM users WHERE id=?", (user_id,))
         row = c.fetchone()
-        if row:
-            return User(*row)
+        if row: return User(*row)
     return None
 
 # =============================================================================
 # Core processing
 # =============================================================================
+def _write_xml(tree: ET.ElementTree, path: str):
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
 def fetch_and_filter() -> bool:
-    """Fetch XML feed and filter by CPC threshold. Writes filtered XML + logs row."""
+    """Fetch the incoming feed once, then generate latest.xml for each profile (no archives)."""
     if not CONFIG["feed_url"]:
         print("❌ No feed URL configured")
         return False
 
     try:
+        # Fetch once
         resp = requests.get(CONFIG["feed_url"], timeout=30)
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
         all_jobs = root.findall(".//job")
 
-        threshold = to_float(CONFIG.get("cpc_threshold"), 0.0)
-        filtered = []
-        cpc_counts: Dict[str, int] = {}
+        profiles = get_profiles(enabled_only=True)
+        if not profiles:
+            print("ℹ️ No enabled profiles; nothing to generate.")
+            return True
 
-        for job in all_jobs:
-            cpc_raw = job.findtext("cpc", default="0")
-            cpc = to_float(cpc_raw, 0.0)
+        now = datetime.datetime.now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
-            if cpc >= threshold:
+        CONFIG["last_run"] = now_str
+        CONFIG["last_total"] = 0
+        CONFIG["stats"] = {}
+
+        for slug, cpc_min, cpc_max in profiles:
+            ensure_profile_dir(slug)
+
+            filtered = []
+            cpc_counts: Dict[str, int] = {}
+
+            for job in all_jobs:
+                cpc_raw = job.findtext("cpc", default="0")
+                cpc = to_float(cpc_raw, 0.0)
+                if cpc < cpc_min:
+                    continue
+                if cpc_max is not None and cpc > cpc_max:
+                    continue
                 filtered.append(job)
                 key = f"{round(cpc, 2):.2f}"
                 cpc_counts[key] = cpc_counts.get(key, 0) + 1
 
-        # Write filtered XML
-        new_root = ET.Element("jobs")
-        for job in filtered:
-            new_root.append(job)
-        ET.ElementTree(new_root).write(FILTERED_FILE, encoding="utf-8")
+            new_root = ET.Element("jobs")
+            for job in filtered:
+                new_root.append(job)
+            tree = ET.ElementTree(new_root)
 
-        # Update CONFIG
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        CONFIG["last_run"] = now_str
-        CONFIG["last_total"] = len(filtered)
-        CONFIG["stats"] = cpc_counts
+            # Write ONLY the latest file per profile (no archives)
+            latest_path = os.path.join(FEEDS_DIR, slug, "latest.xml")
+            _write_xml(tree, latest_path)
 
-        # Log to DB
-        with sqlite3.connect(DB_FILE) as conn:
-            c = conn.cursor()
-            c.execute(
-                "INSERT INTO logs (run_time, jobs_total, jobs_filtered, cpc_stats) VALUES (?, ?, ?, ?)",
-                (now_str, len(all_jobs), len(filtered), json.dumps(cpc_counts)),
-            )
-            conn.commit()
+            # Update summary (last profile’s numbers)
+            CONFIG["last_total"] = len(filtered)
+            CONFIG["stats"] = cpc_counts
 
-        print(f"✅ Filtered {len(filtered)}/{len(all_jobs)} jobs at {now_str}")
+            # Log run (file_path is None since no archive)
+            with sqlite3.connect(DB_FILE) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO logs (run_time, jobs_total, jobs_filtered, cpc_stats, file_path, profile_slug) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (now_str, len(all_jobs), len(filtered), json.dumps(cpc_counts), None, slug)
+                )
+                conn.commit()
+
+        print(f"✅ Generated latest.xml for {len(profiles)} profile(s) at {now_str}")
         return True
 
     except Exception as e:
@@ -272,7 +314,6 @@ def fetch_and_filter() -> bool:
 @app.route("/", methods=["GET", "POST"])
 @login_required
 def index():
-    # Always reflect latest saved settings in UI
     load_settings_into_config()
 
     if request.method == "POST":
@@ -282,33 +323,28 @@ def index():
                 flash("Feed URL is required", "danger")
                 return redirect(url_for("index"))
 
-            cpc_threshold = to_float(request.form.get("cpc_threshold", ""), 0.0)
-            if cpc_threshold < 0:
-                raise ValueError("CPC threshold cannot be negative")
-
             interval = to_int(request.form.get("interval", ""), 1)
             if interval < 1 or interval > MAX_INTERVAL_HOURS:
                 raise ValueError(f"Interval must be between 1 and {MAX_INTERVAL_HOURS} hours")
 
-            # Save to CONFIG
-            CONFIG["feed_url"] = feed_url
-            CONFIG["cpc_threshold"] = float(cpc_threshold)
-            CONFIG["interval"] = int(interval)
+            # Optional: allow updating base_slug if present in form
+            base_slug_in = request.form.get("base_slug")
+            if base_slug_in is not None:
+                CONFIG["base_slug"] = normalize_slug(base_slug_in, CONFIG["base_slug"])
 
-            # Persist to DB first (source of truth)
+            CONFIG["feed_url"] = feed_url
+            CONFIG["interval"] = int(interval)
             save_settings_from_config()
 
-            # Update scheduler
             if not update_scheduler(interval):
                 flash("Failed to update scheduler", "danger")
                 return redirect(url_for("index"))
 
-            # Run immediately once
             if fetch_and_filter():
                 _update_next_run_label()
                 flash("✅ First run completed successfully!", "success")
             else:
-                flash("❌ Error during first run. Check your feed URL and threshold.", "danger")
+                flash("❌ Error during first run.", "danger")
 
             return redirect(url_for("dashboard"))
 
@@ -316,123 +352,186 @@ def index():
             flash(f"Unexpected error: {e}", "danger")
             return redirect(url_for("index"))
 
-    return render_template("setup.html", config=CONFIG, title="Setup Job Feed")
+    # If you want to show base_slug in the setup form, pass it in config
+    return render_template("setup.html", config=CONFIG, title="Setup Job Feed", profiles=get_profiles(enabled_only=False))
 
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    # Ensure latest settings are loaded for display
     load_settings_into_config()
-
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        # Last run
-        c.execute(
-            "SELECT run_time, jobs_total, jobs_filtered, cpc_stats FROM logs ORDER BY id DESC LIMIT 1"
-        )
-        last = c.fetchone()
-        # Last 10 runs
-        c.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 10")
+        c.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 200")
         logs = c.fetchall()
-
-    stats = {}
-    last_run = None
-    total_filtered = None
-
-    if last:
-        last_run = last[0]           # run_time
-        total_filtered = last[2]     # jobs_filtered
-        try:
-            stats = json.loads(last[3]) if last[3] else {}
-        except json.JSONDecodeError:
-            stats = {}
 
     return render_template(
         "dashboard.html",
-        total=total_filtered,
-        filtered_link=url_for("download"),
-        last_run=last_run,
-        stats=stats,
-        next_run=CONFIG.get("next_run"),
         logs=logs,
-        current_threshold=CONFIG.get("cpc_threshold", 0),
+        last_run=CONFIG.get("last_run"),
+        next_run=CONFIG.get("next_run"),
+        stats=CONFIG.get("stats") or {},
         current_feed_url=CONFIG.get("feed_url"),
         current_interval=CONFIG.get("interval"),
+        profiles=get_profiles(enabled_only=False),   # <-- needed
+        public_base=request.url_root.rstrip("/"),    # <-- needed
+        base_slug=CONFIG.get("base_slug"),           # <-- needed
         title="Dashboard",
     )
 
+# Admin download (latest) for a given profile
 @app.route("/download")
 @login_required
 def download():
-    if os.path.exists(FILTERED_FILE):
-        return send_file(FILTERED_FILE, as_attachment=True)
-    flash("No filtered XML file yet.", "warning")
+    slug = (request.args.get("slug") or "").strip()
+    if not slug:
+        profs = get_profiles(enabled_only=True)
+        if not profs:
+            flash("No profiles defined yet.", "warning")
+            return redirect(url_for("dashboard"))
+        slug = profs[0][0]
+    latest_path = os.path.join(FEEDS_DIR, slug, "latest.xml")
+    if os.path.exists(latest_path):
+        return send_file(latest_path, as_attachment=True, download_name=f"{slug}.xml", mimetype="application/xml")
+    flash("No latest XML found for that profile.", "warning")
     return redirect(url_for("dashboard"))
 
+# --- PUBLIC (legacy): latest for a profile
+@app.route("/<slug>")
+def public_latest(slug):
+    latest_path = os.path.join(FEEDS_DIR, slug, "latest.xml")
+    if os.path.exists(latest_path):
+        return send_file(latest_path, as_attachment=False, mimetype="application/xml", download_name=f"{slug}.xml")
+    return ("No filtered XML yet.", 404)
+
+# --- PUBLIC (legacy): archives for a profile
+# @app.route("/feeds/<slug>/<path:filename>")
+# def public_feed_history(slug, filename):
+#     base = os.path.join(FEEDS_DIR, slug)
+#     return send_from_directory(base, filename, mimetype="application/xml")
+
+# --- PUBLIC (nested): latest for a profile under a base slug (e.g., /stellenonline/xml1)
+@app.route("/<base>/<slug>")
+def public_latest_nested(base, slug):
+    if normalize_slug(base) != CONFIG.get("base_slug"):
+        return ("Unknown path", 404)
+    latest_path = os.path.join(FEEDS_DIR, slug, "latest.xml")
+    if os.path.exists(latest_path):
+        return send_file(latest_path, as_attachment=False, mimetype="application/xml",
+                         download_name=f"{slug}.xml")
+    return ("No filtered XML yet.", 404)
+
+# --- PUBLIC (nested): archives for a profile (e.g., /feeds/stellenonline/xml1/filtered_*.xml)
+# @app.route("/feeds/<base>/<slug>/<path:filename>")
+# def public_feed_history_nested(base, slug, filename):
+#     if normalize_slug(base) != CONFIG.get("base_slug"):
+#         return ("Unknown path", 404)
+#     base_dir = os.path.join(FEEDS_DIR, slug)
+#     return send_from_directory(base_dir, filename, mimetype="application/xml")
+
+# --- PUBLIC (hyphen style): /stellenonline-xml1
+@app.route("/<base>-<slug>")
+def public_latest_hyphen(base, slug):
+    if normalize_slug(base) != CONFIG.get("base_slug"):
+        return ("Unknown path", 404)
+    latest_path = os.path.join(FEEDS_DIR, slug, "latest.xml")
+    if os.path.exists(latest_path):
+        return send_file(latest_path, as_attachment=False, mimetype="application/xml",
+                         download_name=f"{slug}.xml")
+    return ("No filtered XML yet.", 404)
+
+# --- Simple profile management (list + add + delete)
+@app.route("/profiles", methods=["GET", "POST"])
+@login_required
+def profiles():
+    if request.method == "POST":
+        slug = normalize_slug(request.form.get("slug") or "")
+        cpc_min = to_float(request.form.get("cpc_min", ""), 0.0)
+        cpc_max_raw = (request.form.get("cpc_max") or "").strip()
+        cpc_max = None if cpc_max_raw == "" else to_float(cpc_max_raw, None)
+        enabled = 1 if (request.form.get("is_enabled") == "on") else 0
+
+        if not slug:
+            flash("Slug is required.", "danger")
+            return redirect(url_for("profiles"))
+        if cpc_max is not None and cpc_max < cpc_min:
+            flash("Max CPC must be >= Min CPC.", "danger")
+            return redirect(url_for("profiles"))
+
+        ensure_profile_dir(slug)
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            try:
+                c.execute("""
+                    INSERT INTO profiles (slug, cpc_min, cpc_max, is_enabled, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (slug, float(cpc_min), cpc_max if cpc_max is None else float(cpc_max), enabled, datetime.datetime.now().isoformat()))
+                conn.commit()
+                flash("Profile created.", "success")
+            except sqlite3.IntegrityError:
+                flash("Slug already exists.", "warning")
+        return redirect(url_for("profiles"))
+
+    # GET: list
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id, slug, cpc_min, cpc_max, is_enabled FROM profiles ORDER BY id")
+        profs = c.fetchall()
+    return render_template("profiles.html", profiles=profs, title="Profiles")
+
+@app.route("/profiles/<int:pid>/delete", methods=["POST"])
+@login_required
+def delete_profile(pid):
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM profiles WHERE id=?", (pid,))
+        conn.commit()
+    flash("Profile deleted.", "info")
+    return redirect(url_for("profiles"))
+
+# --- Auth ---
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard"))
-
     if request.method == "POST":
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
-
         with sqlite3.connect(DB_FILE) as conn:
             c = conn.cursor()
             c.execute("SELECT id, email, password_hash FROM users WHERE email=?", (email,))
             row = c.fetchone()
-
         if row and check_password_hash(row[2], password):
-            user = User(*row)
-            login_user(user, remember=True)
+            login_user(User(*row), remember=True)
             flash("✅ Logged in successfully.", "success")
-            next_url = request.args.get("next") or url_for("dashboard")
-            return redirect(next_url)
-        else:
-            flash("❌ Invalid credentials.", "danger")
-
+            return redirect(url_for("dashboard"))
+        flash("❌ Invalid credentials.", "danger")
     return render_template("login.html", title="Login")
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "GET":
         return render_template("register.html", title="Register", allow_signup=ALLOW_SIGNUP)
-
     if not ALLOW_SIGNUP:
         flash("Signups are currently disabled.", "warning")
         return redirect(url_for("login"))
-
     email = (request.form.get("email") or "").strip().lower()
     password = (request.form.get("password") or "")
     confirm  = (request.form.get("confirm") or "")
-
     if not email or "@" not in email:
-        flash("Please enter a valid email.", "danger")
-        return redirect(url_for("register"))
+        flash("Please enter a valid email.", "danger"); return redirect(url_for("register"))
     if len(password) < 8:
-        flash("Password must be at least 8 characters.", "danger")
-        return redirect(url_for("register"))
+        flash("Password must be at least 8 characters.", "danger"); return redirect(url_for("register"))
     if password != confirm:
-        flash("Passwords do not match.", "danger")
-        return redirect(url_for("register"))
-
+        flash("Passwords do not match.", "danger"); return redirect(url_for("register"))
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         c.execute("SELECT id FROM users WHERE email=?", (email,))
         if c.fetchone():
-            flash("Email already registered. Try logging in.", "warning")
-            return redirect(url_for("login"))
-
-        c.execute(
-            "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
-            (email, generate_password_hash(password), datetime.datetime.now().isoformat()),
-        )
-        conn.commit()
-        user_id = c.lastrowid
-
-    user = User(user_id, email, "")  # password hash not needed for session
-    login_user(user, remember=True)
+            flash("Email already registered. Try logging in.", "warning"); return redirect(url_for("login"))
+        c.execute("INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
+                  (email, generate_password_hash(password), datetime.datetime.now().isoformat()))
+        conn.commit(); user_id = c.lastrowid
+    login_user(User(user_id, email, ""), remember=True)
     flash("🎉 Account created and logged in.", "success")
     return redirect(url_for("dashboard"))
 
@@ -443,13 +542,10 @@ def logout():
     flash("👋 Logged out.", "info")
     return redirect(url_for("login"))
 
-# --- One-time seeding route. Remove after first use.
 @app.route("/create-admin")
 def create_admin_route():
-    seed_admin()
-    return "Seed attempted. Check console."
+    seed_admin(); return "Seed attempted. Check console."
 
-# --- Optional: health check
 @app.route("/healthz")
 def healthz():
     return {"status": "ok", "next_run": CONFIG.get("next_run")}, 200
@@ -459,6 +555,16 @@ def healthz():
 # =============================================================================
 init_db()
 load_settings_into_config()
+# Ensure at least one default profile exists
+with sqlite3.connect(DB_FILE) as conn:
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM profiles")
+    if c.fetchone()[0] == 0:
+        c.execute("""INSERT INTO profiles (slug, cpc_min, cpc_max, is_enabled, created_at)
+                     VALUES (?, ?, ?, 1, ?)""",
+                  ("xml1", 0.0, None, datetime.datetime.now().isoformat()))
+        conn.commit()
+
 # Recreate the scheduler job on boot if a feed is configured
 if CONFIG.get("feed_url"):
     update_scheduler(CONFIG.get("interval") or 1)

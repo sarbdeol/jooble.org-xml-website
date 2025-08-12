@@ -2,70 +2,77 @@
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-3">
   <h3 class="mb-0">Dashboard</h3>
-  <a class="btn btn-secondary" href="{{ url_for('download') }}">Download Filtered XML</a>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-light" href="{{ url_for('profiles') }}">Manage Profiles</a>
+    <a class="btn btn-secondary" href="{{ url_for('download') }}">Download Latest (first profile)</a>
+  </div>
 </div>
 
+<!-- Summary cards -->
 <div class="row g-3 mb-4">
-  <div class="col-md-4">
+  <div class="col-md-3">
     <div class="card p-3">
       <div class="small text-muted">Last Run</div>
-      <div class="fs-5">{{ last_run or "—" }}</div>
+      <div class="stat-value fs-5">{{ last_run or "—" }}</div>
     </div>
   </div>
-  <div class="col-md-4">
+  <div class="col-md-3">
     <div class="card p-3">
       <div class="small text-muted">Next Run</div>
-      <div class="fs-5">{{ next_run or "—" }}</div>
+      <div class="stat-value fs-5">{{ next_run or "—" }}</div>
     </div>
   </div>
-  <div class="col-md-4">
+  <div class="col-md-3">
     <div class="card p-3">
-      <div class="small text-muted">Current Threshold</div>
-      <div class="fs-5">{{ current_threshold }}</div>
+      <div class="small text-muted">Incoming Feed URL</div>
+      <div class="stat-value text-break">{{ current_feed_url or "—" }}</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card p-3">
+      <div class="small text-muted">Profiles</div>
+      <div class="stat-value fs-5">{{ profiles|length if profiles is defined else "—" }}</div>
     </div>
   </div>
 </div>
 
+<!-- Profiles list with public URLs -->
 <div class="card p-3 mb-4">
-  <div class="small text-muted mb-2">CPC Distribution</div>
-  {% if stats and stats|length > 0 %}
-    <ul class="mb-0">
-      {% for k, v in stats.items() %}
-      <li>{{ k }} : {{ v }}</li>
-      {% endfor %}
-    </ul>
+  <div class="small text-muted mb-2">Profiles (latest public URLs)</div>
+  {% set profs = profiles | default([]) %}
+  {% if profs and profs|length > 0 %}
+    <div class="table-responsive">
+      <table class="table table-dark table-striped align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Slug</th>
+            <th>CPC Range</th>
+            <th>Latest (public)</th>
+            <th>Admin Download</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for slug, cpc_min, cpc_max in profs %}
+          <tr>
+            <td><code>{{ slug }}</code></td>
+            <td>{{ cpc_min }} – {{ cpc_max if cpc_max is not none else "No max" }}</td>
+            <td class="text-break">
+              <a href="{{ public_base }}/{{ base_slug }}/{{ slug }}" target="_blank">
+                {{ public_base }}/{{ base_slug }}/{{ slug }}
+              </a>
+            </td>
+            <td>
+              <a class="btn btn-sm btn-outline-light" href="{{ url_for('download', slug=slug) }}">Download</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% else %}
-    <div>No stats yet.</div>
+    <div>No profiles yet. <a href="{{ url_for('profiles') }}">Create one</a>.</div>
   {% endif %}
 </div>
 
-<div class="card p-3">
-  <div class="small text-muted mb-2">Recent Runs</div>
-  <div class="table-responsive">
-    <table class="table table-dark table-striped align-middle mb-0">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Run Time</th>
-          <th>Total Jobs</th>
-          <th>Filtered</th>
-          <th>CPC Stats</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in logs %}
-          <tr>
-            <td>{{ row[0] }}</td>
-            <td>{{ row[1] }}</td>
-            <td>{{ row[2] }}</td>
-            <td>{{ row[3] }}</td>
-            <td><code class="text-break">{{ row[4] }}</code></td>
-          </tr>
-        {% else %}
-          <tr><td colspan="5">No runs yet.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
+
 {% endblock %}

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Feed Filter Dashboard — Technical Guide (Flask + Gunicorn + Nginx + APScheduler)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif; margin: 40px; color: #1e2433; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  h2 { font-size: 20px; margin-top: 28px; }
+  pre, code { background: #f6f8fa; border: 1px solid #e2e6ea; border-radius: 6px; padding: 10px; display: block; overflow-x: auto; }
+  .small { color: #5c6b7a; }
+  .section { margin: 18px 0 10px; }
+  .box { background: #ffffff; border: 1px solid #e2e6ea; border-radius: 8px; padding: 16px; margin: 10px 0; }
+</style>
+</head>
+<body>
+<h1>Job Feed Filter Dashboard — Technical Guide (Flask + Gunicorn + Nginx + APScheduler)</h1>
+<div class="small">Generated on August 10, 2025</div>
+
+<div class="section"><h2>1. Overview</h2><div class="box"><p>This document explains how to deploy, operate, and maintain the Job Feed Filter Dashboard.</p><p>The app is built with Flask, Flask‑Login, APScheduler, and SQLite. It fetches an XML job feed, filters</p><p>entries by CPC threshold, and writes a filtered XML for download. It includes authentication (login/register),</p><p>a setup page to configure feed URL / threshold / interval, and a dashboard with recent run stats.</p></div></div>
+<div class="section"><h2>2. File & Folder Structure</h2><div class="box"><pre><code>Suggested structure on server:
+.
+├─ app.py                        # Main Flask app (routes, APScheduler, settings persistence)
+├─ logs.db                       # SQLite database (users, settings, logs)
+├─ requirements.txt              # Python dependencies
+├─ templates/                    # Jinja2 templates
+│  ├─ base.html                  # Global layout, navbar, dark theme overrides
+│  ├─ login.html                 # Login form
+│  ├─ register.html              # Optional signup (controlled by ALLOW_SIGNUP)
+│  ├─ setup.html                 # Configure feed URL, CPC threshold, interval
+│  └─ dashboard.html             # Show Last Run, Next Run, stats and recent logs
+└─ static/
+   └─ filtered_feed.xml          # Generated filtered XML (after first run)
+</code></pre></div></div>
+<div class="section"><h2>3. Configuration (Env Vars)</h2><div class="box"><p>Set the following environment variables for production:</p><p>- FLASK_SECRET_KEY: Strong random string for session signing</p><p>- ALLOW_SIGNUP: "1" to enable /register, "0" to disable (default "1")</p><p>Other tunables are stored in SQLite 'settings' table (feed_url, cpc_threshold, interval).</p></div></div>
+<div class="section"><h2>4. Install & First Run (Ubuntu)</h2><div class="box"><pre><code># Create virtualenv & install packages
+sudo apt update
+python3 -m venv myenv
+source myenv/bin/activate
+pip install --upgrade pip
+pip install flask flask-login apscheduler requests
+
+# (Optional for generating PDF locally) 
+pip install reportlab
+
+# Project folder permissions
+mkdir -p static
+touch static/filtered_feed.xml
+
+# Run once to initialize DB
+python app.py
+
+# Seed first admin (temporary route, remove after use)
+# Visit in browser: http://SERVER/create-admin
+# Then login at:     http://SERVER/login
+</code></pre></div></div>
+<div class="section"><h2>5. Running Locally</h2><div class="box"><pre><code># In dev
+source myenv/bin/activate
+FLASK_SECRET_KEY='dev-secret' python app.py
+
+# Or via Gunicorn (dev)
+gunicorn -w 1 -b 127.0.0.1:5000 app:app
+</code></pre></div></div>
+<div class="section"><h2>6. Production: Gunicorn + Nginx (systemd)</h2><div class="box"><pre><code>Example systemd service: /etc/systemd/system/gunicorn.service
+------------------------------------------------------------------
+[Unit]
+Description=gunicorn for seexml Flask app
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/root/jooble.org-xml-website
+Environment="FLASK_SECRET_KEY=CHANGE_ME"
+Environment="ALLOW_SIGNUP=0"
+ExecStart=/root/myenv/bin/gunicorn --workers 1 --bind 127.0.0.1:5000 app:app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+Why --workers 1? APScheduler runs inside the app. Multiple workers would start multiple schedulers and duplicate jobs.
+If you need more concurrency, run the scheduler as a separate service instead.
+</code></pre></div></div>
+<div class="section"><h2>7. Nginx Reverse Proxy</h2><div class="box"><pre><code>Example server block (e.g., /etc/nginx/sites-available/xmlfilter)
+---------------------------------------------------------------------
+server {
+    listen 80;
+    server_name YOUR_DOMAIN_OR_IP;
+
+    client_max_body_size 10M;
+
+    location /static/ {
+        alias /root/jooble.org-xml-website/static/;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300;
+        proxy_connect_timeout 300;
+    }
+}
+# Enable & test
+sudo ln -s /etc/nginx/sites-available/xmlfilter /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+</code></pre></div></div>
+<div class="section"><h2>8. Restart & Ops Commands</h2><div class="box"><pre><code># Gunicorn
+sudo systemctl restart gunicorn
+sudo systemctl status --no-pager gunicorn
+sudo journalctl -u gunicorn -f
+
+# If you've changed the unit file:
+sudo systemctl daemon-reload
+sudo systemctl restart gunicorn
+
+# Nginx
+sudo nginx -t && sudo systemctl reload nginx
+sudo systemctl restart nginx
+sudo journalctl -u nginx -f
+</code></pre></div></div>
+<div class="section"><h2>9. Scheduler Behavior & Persistence</h2><div class="box"><p>APScheduler jobs live in memory and disappear on process restart. To ensure continuity:</p><p>- The app persists settings (feed_url, cpc_threshold, interval) in SQLite table 'settings'.</p><p>- On startup, app loads settings and **re-creates the interval job** automatically.</p><p>- This ensures the scheduler starts again with the same interval after any restart.</p><p>Notes:</p><p>- With Gunicorn, use --workers 1 to avoid duplicate schedulers. Alternatively, run scheduler as a separate service.</p><p>- 'logs' table stores each run (timestamp, jobs_total, jobs_filtered, cpc distribution).</p></div></div>
+<div class="section"><h2>10. App Usage (Routes)</h2><div class="box"><pre><code>/login           # Sign in
+/register        # Sign up (if ALLOW_SIGNUP=1)
+/                # Setup page (configure feed URL, CPC threshold, interval)
+/dashboard       # Dashboard with last/next run, stats, and recent logs
+/download        # Download the latest filtered XML
+/create-admin    # One-time helper to create admin user; remove after first use
+/healthz         # Simple health probe
+</code></pre></div></div>
+<div class="section"><h2>11. Data & Backup</h2><div class="box"><pre><code>SQLite file: logs.db contains:
+- users(id, email, password_hash, created_at)
+- settings(id=1, feed_url, cpc_threshold, interval)
+- logs(id, run_time, jobs_total, jobs_filtered, cpc_stats JSON)
+
+Backup:
+sudo systemctl stop gunicorn
+cp logs.db logs_$(date +%F).db
+sudo systemctl start gunicorn
+
+Restore:
+sudo systemctl stop gunicorn
+cp logs_YYYY-MM-DD.db logs.db
+sudo systemctl start gunicorn
+</code></pre></div></div>
+<div class="section"><h2>12. Troubleshooting</h2><div class="box"><pre><code>• ValueError: could not convert string to float: '' 
+  Cause: empty threshold input or parsing.
+  Fix: app uses safe parsing helpers (to_float/to_int) and persists numeric values.
+
+• 502 Bad Gateway
+  Check Gunicorn status/logs:
+  sudo systemctl status gunicorn
+  sudo journalctl -u gunicorn -n 200 --no-pager
+
+• No filtered XML yet
+  Ensure feed URL is correct, threshold reasonable, and scheduler is running.
+  Also verify permissions on /static/ directory.</code></pre></div></div>
+<div class="section"><h2>13. Security Checklist</h2><div class="box"><p>- Set a strong FLASK_SECRET_KEY.</p><p>- Restrict ALLOW_SIGNUP=0 in production (create users manually).</p><p>- Serve via HTTPS (Let's Encrypt).</p><p>- Keep server packages updated.</p><p>- Limit SSH access; use firewall (ufw).</p></div></div>
+<div class="section"><h2>14. Change Log</h2><div class="box"><p>• August 10, 2025: Initial deployment with persisted settings and auto-scheduler.</p><p>• Configurable login/register, Setup, Dashboard, and filtered XML download.</p><p>• Dark theme UI fixes for readability.</p></div></div>
+</body></html>

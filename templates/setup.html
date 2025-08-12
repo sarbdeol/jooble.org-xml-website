@@ -4,8 +4,8 @@
 
 <form method="POST" novalidate>
   <div class="row g-3">
-    <div class="col-md-7">
-      <label class="form-label">Feed URL</label>
+    <div class="col-md-8">
+      <label class="form-label">Incoming Feed URL</label>
       <input
         name="feed_url"
         type="url"
@@ -14,24 +14,10 @@
         value="{{ config.feed_url or '' }}"
         required
       >
-      <div class="form-text">Public XML feed URL to fetch and filter.</div>
+      <div class="form-text">Public XML feed URL to fetch once per run.</div>
     </div>
 
-    <div class="col-md-3">
-      <label class="form-label">CPC Threshold</label>
-      <input
-        name="cpc_threshold"
-        type="number"
-        step="0.01"
-        min="0"
-        class="form-control"
-        value="{{ config.cpc_threshold or 0 }}"
-        required
-      >
-      <div class="form-text">Only keep jobs with CPC ≥ this value.</div>
-    </div>
-
-    <div class="col-md-2">
+    <div class="col-md-4">
       <label class="form-label">Interval (hours)</label>
       <input
         name="interval"
@@ -44,9 +30,22 @@
       >
       <div class="form-text">How often to re-run (1–8760).</div>
     </div>
+    <div class="col-md-4">
+      <label class="form-label">Base Slug</label>
+      <input
+        name="base_slug"
+        type="text"
+        class="form-control"
+        value="{{ config.base_slug or 'stellenonline' }}"
+        placeholder="stellenonline"
+      >
+      <div class="form-text">Public path: /{{ config.base_slug or 'stellenonline' }}/&lt;profile&gt;</div>
+    </div>
+
   </div>
 
   <button class="btn btn-success mt-3" type="submit">Save & Run Now</button>
+  <a class="btn btn-outline-light mt-3 ms-2" href="{{ url_for('profiles') }}">Manage Profiles (CPC ranges)</a>
 </form>
 
 <hr class="my-4"/>
@@ -60,14 +59,14 @@
   </div>
   <div class="col-md-4">
     <div class="card p-3">
-      <div class="small text-muted">Current Threshold</div>
-      <div class="stat-value text-break">{{ config.cpc_threshold or 0 }}</div>
+      <div class="small text-muted">Next Run</div>
+      <div class="stat-value">{{ config.next_run or "—" }}</div>
     </div>
   </div>
   <div class="col-md-4">
     <div class="card p-3">
-      <div class="small text-muted">Next Run</div>
-      <div class="stat-value text-break">{{ config.next_run or "—" }}</div>
+      <div class="small text-muted">Profiles Configured</div>
+      <div class="stat-value">{{ profiles|length if profiles is defined else "—" }}</div>
     </div>
   </div>
 </div>
