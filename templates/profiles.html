@@ -13,7 +13,7 @@
         <div class="mb-3">
           <label class="form-label">Slug</label>
           <input name="slug" class="form-control" placeholder="e.g. xml1" required>
-          <div class="form-text">Public URL will be <code>{{ request.url_root.rstrip('/') }}/&lt;slug&gt;</code></div>
+          <div class="form-text">Public URL: <code>{{ request.url_root.rstrip('/') }}/{{ base_slug if base_slug else 'stellenonline' }}/&lt;slug&gt;</code></div>
         </div>
         <div class="mb-3">
           <label class="form-label">CPC Min</label>

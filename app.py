@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List, Tuple
 import requests
 from flask import (
     Flask, request, render_template, redirect, url_for, send_file, flash,
-    send_from_directory, abort
+    send_from_directory
 )
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.base import JobLookupError
@@ -75,7 +75,7 @@ def init_db():
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
 
-        # logs (add file_path, profile_slug)
+        # logs (file_path kept for compatibility; unused when no archives)
         c.execute("""
             CREATE TABLE IF NOT EXISTS logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,9 +110,8 @@ def init_db():
                 base_slug TEXT
             )
         """)
-        for col, sqltype in [("base_slug", "TEXT")]:
-            try: c.execute(f"ALTER TABLE settings ADD COLUMN {col} {sqltype}")
-            except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE settings ADD COLUMN base_slug TEXT")
+        except sqlite3.OperationalError: pass
 
         # profiles: many outgoing XML definitions (slug + min/max)
         c.execute("""
@@ -231,7 +230,7 @@ def load_user(user_id: str) -> Optional[User]:
     return None
 
 # =============================================================================
-# Core processing
+# Core processing (NO archives, only latest.xml per profile)
 # =============================================================================
 def _write_xml(tree: ET.ElementTree, path: str):
     tree.write(path, encoding="utf-8", xml_declaration=True)
@@ -327,7 +326,7 @@ def index():
             if interval < 1 or interval > MAX_INTERVAL_HOURS:
                 raise ValueError(f"Interval must be between 1 and {MAX_INTERVAL_HOURS} hours")
 
-            # Optional: allow updating base_slug if present in form
+            # Base slug from form
             base_slug_in = request.form.get("base_slug")
             if base_slug_in is not None:
                 CONFIG["base_slug"] = normalize_slug(base_slug_in, CONFIG["base_slug"])
@@ -352,7 +351,6 @@ def index():
             flash(f"Unexpected error: {e}", "danger")
             return redirect(url_for("index"))
 
-    # If you want to show base_slug in the setup form, pass it in config
     return render_template("setup.html", config=CONFIG, title="Setup Job Feed", profiles=get_profiles(enabled_only=False))
 
 @app.route("/dashboard")
@@ -372,9 +370,9 @@ def dashboard():
         stats=CONFIG.get("stats") or {},
         current_feed_url=CONFIG.get("feed_url"),
         current_interval=CONFIG.get("interval"),
-        profiles=get_profiles(enabled_only=False),   # <-- needed
-        public_base=request.url_root.rstrip("/"),    # <-- needed
-        base_slug=CONFIG.get("base_slug"),           # <-- needed
+        profiles=get_profiles(enabled_only=False),
+        public_base=request.url_root.rstrip("/"),
+        base_slug=CONFIG.get("base_slug"),
         title="Dashboard",
     )
 
@@ -395,42 +393,31 @@ def download():
     flash("No latest XML found for that profile.", "warning")
     return redirect(url_for("dashboard"))
 
-# --- PUBLIC (legacy): latest for a profile
-@app.route("/<slug>")
-def public_latest(slug):
-    latest_path = os.path.join(FEEDS_DIR, slug, "latest.xml")
-    if os.path.exists(latest_path):
-        return send_file(latest_path, as_attachment=False, mimetype="application/xml", download_name=f"{slug}.xml")
-    return ("No filtered XML yet.", 404)
-
-# --- PUBLIC (legacy): archives for a profile
-# @app.route("/feeds/<slug>/<path:filename>")
-# def public_feed_history(slug, filename):
-#     base = os.path.join(FEEDS_DIR, slug)
-#     return send_from_directory(base, filename, mimetype="application/xml")
-
-# --- PUBLIC (nested): latest for a profile under a base slug (e.g., /stellenonline/xml1)
-@app.route("/<base>/<slug>")
-def public_latest_nested(base, slug):
-    if normalize_slug(base) != CONFIG.get("base_slug"):
+# --- PUBLIC: base-only -> default profile latest
+@app.route("/<base>")
+def public_base_root(base):
+    base_norm = normalize_slug(base)
+    if base_norm != CONFIG.get("base_slug"):
         return ("Unknown path", 404)
-    latest_path = os.path.join(FEEDS_DIR, slug, "latest.xml")
+
+    profs = get_profiles(enabled_only=True)  # list of (slug, min, max)
+    if not profs:
+        return ("No profiles configured.", 404)
+
+    # Default: a profile named as base, else first enabled
+    default_slug = next((slug for slug, _, _ in profs if slug == base_norm), None)
+    if not default_slug:
+        default_slug = profs[0][0]
+
+    latest_path = os.path.join(FEEDS_DIR, default_slug, "latest.xml")
     if os.path.exists(latest_path):
         return send_file(latest_path, as_attachment=False, mimetype="application/xml",
-                         download_name=f"{slug}.xml")
+                         download_name=f"{default_slug}.xml")
     return ("No filtered XML yet.", 404)
 
-# --- PUBLIC (nested): archives for a profile (e.g., /feeds/stellenonline/xml1/filtered_*.xml)
-# @app.route("/feeds/<base>/<slug>/<path:filename>")
-# def public_feed_history_nested(base, slug, filename):
-#     if normalize_slug(base) != CONFIG.get("base_slug"):
-#         return ("Unknown path", 404)
-#     base_dir = os.path.join(FEEDS_DIR, slug)
-#     return send_from_directory(base_dir, filename, mimetype="application/xml")
-
-# --- PUBLIC (hyphen style): /stellenonline-xml1
-@app.route("/<base>-<slug>")
-def public_latest_hyphen(base, slug):
+# --- PUBLIC: nested -> /<base>/<profile>
+@app.route("/<base>/<slug>")
+def public_latest_nested(base, slug):
     if normalize_slug(base) != CONFIG.get("base_slug"):
         return ("Unknown path", 404)
     latest_path = os.path.join(FEEDS_DIR, slug, "latest.xml")
@@ -555,7 +542,7 @@ def healthz():
 # =============================================================================
 init_db()
 load_settings_into_config()
-# Ensure at least one default profile exists
+# Ensure at least one default profile exists (so /BASE works)
 with sqlite3.connect(DB_FILE) as conn:
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM profiles")

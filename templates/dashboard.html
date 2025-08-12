@@ -30,13 +30,13 @@
   </div>
   <div class="col-md-3">
     <div class="card p-3">
-      <div class="small text-muted">Profiles</div>
-      <div class="stat-value fs-5">{{ profiles|length if profiles is defined else "—" }}</div>
+      <div class="small text-muted">Base Slug</div>
+      <div class="stat-value fs-5">{{ base_slug }}</div>
     </div>
   </div>
 </div>
 
-<!-- Profiles list with public URLs -->
+<!-- Profiles list with public URLs (latest only) -->
 <div class="card p-3 mb-4">
   <div class="small text-muted mb-2">Profiles (latest public URLs)</div>
   {% set profs = profiles | default([]) %}
@@ -57,9 +57,21 @@
             <td><code>{{ slug }}</code></td>
             <td>{{ cpc_min }} – {{ cpc_max if cpc_max is not none else "No max" }}</td>
             <td class="text-break">
-              <a href="{{ public_base }}/{{ base_slug }}/{{ slug }}" target="_blank">
-                {{ public_base }}/{{ base_slug }}/{{ slug }}
-              </a>
+              {% if slug == base_slug %}
+                <!-- base-only path for default/profile==base -->
+                <a href="{{ public_base }}/{{ base_slug }}" target="_blank">
+                  {{ public_base }}/{{ base_slug }}
+                </a>
+                <div class="small text-muted">
+                  Also: <a href="{{ public_base }}/{{ base_slug }}/{{ slug }}" target="_blank">
+                    {{ public_base }}/{{ base_slug }}/{{ slug }}
+                  </a>
+                </div>
+              {% else %}
+                <a href="{{ public_base }}/{{ base_slug }}/{{ slug }}" target="_blank">
+                  {{ public_base }}/{{ base_slug }}/{{ slug }}
+                </a>
+              {% endif %}
             </td>
             <td>
               <a class="btn btn-sm btn-outline-light" href="{{ url_for('download', slug=slug) }}">Download</a>
@@ -74,5 +86,34 @@
   {% endif %}
 </div>
 
-
+<!-- Recent runs (no archive links) -->
+<div class="card p-3">
+  <div class="small text-muted mb-2">Recent Runs</div>
+  <div class="table-responsive">
+    <table class="table table-dark table-striped align-middle mb-0">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Run Time</th>
+          <th>Profile</th>
+          <th>Total Jobs</th>
+          <th>Filtered</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in logs %}
+          <tr>
+            <td>{{ row[0] }}</td>
+            <td>{{ row[1] }}</td>
+            <td><code>{{ row[6] or "—" }}</code></td>
+            <td>{{ row[2] }}</td>
+            <td>{{ row[3] }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5">No runs yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
 {% endblock %}

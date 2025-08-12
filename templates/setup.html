@@ -4,7 +4,7 @@
 
 <form method="POST" novalidate>
   <div class="row g-3">
-    <div class="col-md-8">
+    <div class="col-md-6">
       <label class="form-label">Incoming Feed URL</label>
       <input
         name="feed_url"
@@ -17,7 +17,7 @@
       <div class="form-text">Public XML feed URL to fetch once per run.</div>
     </div>
 
-    <div class="col-md-4">
+    <div class="col-md-3">
       <label class="form-label">Interval (hours)</label>
       <input
         name="interval"
@@ -30,7 +30,8 @@
       >
       <div class="form-text">How often to re-run (1–8760).</div>
     </div>
-    <div class="col-md-4">
+
+    <div class="col-md-3">
       <label class="form-label">Base Slug</label>
       <input
         name="base_slug"
@@ -39,9 +40,10 @@
         value="{{ config.base_slug or 'stellenonline' }}"
         placeholder="stellenonline"
       >
-      <div class="form-text">Public path: /{{ config.base_slug or 'stellenonline' }}/&lt;profile&gt;</div>
+      <div class="form-text">
+        Public paths: /{{ config.base_slug or 'stellenonline' }} and /{{ config.base_slug or 'stellenonline' }}/&lt;profile&gt;
+      </div>
     </div>
-
   </div>
 
   <button class="btn btn-success mt-3" type="submit">Save & Run Now</button>
@@ -65,8 +67,8 @@
   </div>
   <div class="col-md-4">
     <div class="card p-3">
-      <div class="small text-muted">Profiles Configured</div>
-      <div class="stat-value">{{ profiles|length if profiles is defined else "—" }}</div>
+      <div class="small text-muted">Base Slug</div>
+      <div class="stat-value">{{ config.base_slug or "stellenonline" }}</div>
     </div>
   </div>
 </div>
